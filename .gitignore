@@ -2,10 +2,12 @@
 *.pth
 *.pyc
 *.pyo
+*.npy
 .vscode/
 __pycache__/
-/hovsg.egg-info
-/data/hm3dsem_walks
-/data/scene_graphs
-/outputs
+hovsg.egg-info
+hovsg/data/hm3dsem_walks
+hovsg/data/scene_graphs
+outputs
 checkpoints/
+results_eval

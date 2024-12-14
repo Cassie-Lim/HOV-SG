@@ -2,7 +2,8 @@ import os
 import sys
 import json
 import torch
-
+import csv
+import ast
 import numpy as np
 import open3d as o3d
 import networkx as nx
@@ -97,6 +98,13 @@ class HM3DSemanticEvaluator:
 
         self.metrics = defaultdict(dict)
 
+        floor_labels_file_path = os.path.join(params.main.package_path, "data/hm3dsem/metadata/Per_Scene_Floor_Sep.csv")
+        with open(floor_labels_file_path, 'r') as f:
+            reader = csv.reader(f)
+            floor_sep_data = {rows[0]: rows[1] for rows in reader} 
+        floor_sep_data = np.array(ast.literal_eval(floor_sep_data[params.main.scene_id]))
+        self.scene_floor_sep_lower_bound = floor_sep_data[params.main.floor_id] - 0.3
+        self.scene_floor_sep_upper_bound = floor_sep_data[params.main.floor_id+1] - 0.3
     def load_gt_graph_from_json(self, path):
         self.gt_scene_infos_path = path
         print("Loading GT graph from: ", self.gt_scene_infos_path)
@@ -349,6 +357,7 @@ class HM3DSemanticEvaluator:
         """
         Evaluate the object prediction by comparing 3D IoU of the predicted object with the ground truth object
         """
+
         object_metrics = {"instances": {}, "instances_iou50": {}, "ins_semantics": {}}
         self.metrics["objects"] = object_metrics
         print("----- Object Evaluation ------")
@@ -437,6 +446,14 @@ class HM3DSemanticEvaluator:
 
         print("Top-k semantics evaluation")
         # eval top-k accuracy at specific thresholds
+        self.vertice_semantics_eval_tp_auc(
+            self.params.eval.hm3dsem.top_k_object_semantic_eval,
+            row_ind,
+            col_ind,
+            pred_objects,
+            gt_objects,
+            gt_text_feats,
+            gt_classes,)
         top_k_acc_representative, _ = self.object_semantics_eval_tp_auc(
             self.params.eval.hm3dsem.top_k_object_semantic_eval,
             row_ind,
@@ -446,17 +463,25 @@ class HM3DSemanticEvaluator:
             gt_text_feats,
             gt_classes,
         )
-
+        # top_k_acc = self.object_semantics_eval_topk_query(
+        #     [1, 5, 10, 20, 30],
+        #     row_ind,
+        #     col_ind,
+        #     pred_objects,
+        #     gt_objects,
+        #     gt_text_feats,
+        #     gt_classes,
+        # )
         # eval top-k auc score based on a range of thresholds
-        _, tp_multi_top_k_acc_auc = self.object_semantics_eval_tp_auc(
-            [k for k in range(0, len(gt_classes), 10)],
-            row_ind,
-            col_ind,
-            pred_objects,
-            gt_objects,
-            gt_text_feats,
-            gt_classes,
-        )
+        # _, tp_multi_top_k_acc_auc = self.object_semantics_eval_tp_auc(
+        #     [k for k in range(0, len(gt_classes), 10)],
+        #     row_ind,
+        #     col_ind,
+        #     pred_objects,
+        #     gt_objects,
+        #     gt_text_feats,
+        #     gt_classes,
+        # )
 
         obj_instance_semantics_topk_class_metrics = dict()
         obj_instance_semantics_topk_class_metrics["tp_top_k_acc"] = top_k_acc_representative
@@ -467,13 +492,153 @@ class HM3DSemanticEvaluator:
         for k, v in obj_instance_semantics_topk_class_metrics.items():
             print("{}: {}".format(k, v))
         print("- - - - - - - - - - - - - - - ")
+    def vertice_semantics_eval_tp_auc(
+        self, top_k_spec, row_ind, col_ind, pred_objects_all, gt_objects, gt_text_feats, gt_classes
+    ):
+        import pandas as pd
+        hm3dsem_full_mappings = pd.read_csv('hovsg/labels/hm3dsem_full_mappings.csv', header=0, sep=",")
+        hm3d_to_nyu = {k: v if not pd.isna(v) else None for k, v in zip(hm3dsem_full_mappings['category'], hm3dsem_full_mappings['nyuClass'])}
+        excluded_categories = ['door', 'window', 'wall', 'floor', 'ceiling', 'column', 'beam', 'stair', 'tabletop', 'light', 'appliance', 'furniture', 'other', 'unknown']
+        valid_gt_objects = []
+        valid_row_ind = []
+        for gt_id, gt_obj in enumerate(gt_objects):
+            min_bound = np.array(gt_obj.aabb_center) - np.array(gt_obj.aabb_dims) / 2
+            max_bound = np.array(gt_obj.aabb_center) + np.array(gt_obj.aabb_dims) / 2
+            if not (min_bound[1] >= self.scene_floor_sep_lower_bound and max_bound[1] <= self.scene_floor_sep_upper_bound): 
+                continue
+            if gt_obj.category not in hm3d_to_nyu:
+                continue
+            if hm3d_to_nyu[gt_obj.category] is None:
+                continue
+            if any(ex_o in hm3d_to_nyu[gt_obj.category] for ex_o in excluded_categories):
+                continue
+            valid_gt_objects.append(gt_obj)
+            valid_row_ind.append(row_ind[list(col_ind).index(gt_id)])
+        # gt_object_indices = np.unique(np.array([gt_classes.index(hm3d_to_nyu[gt_obj.category]) for gt_obj in valid_gt_objects]))
+        # gt_object_text_feats = gt_text_feats[gt_object_indices]
+        # gt_object_classes = [gt_classes[ind] for ind in gt_object_indices]
+        pred_objects = [pred_objects_all[i] for i in valid_row_ind]
+        # pred_objects = pred_objects_all
+        pred_object_text_feats = np.array([pred_obj.embedding for pred_obj in pred_objects])
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        dot_sim = pairwise_cosine_similarity(
+                    torch.from_numpy(pred_object_text_feats).float().to(device),
+                    torch.from_numpy(gt_text_feats).float().to(device),
+                )
+        # sorted_dot_sim = np.argsort(dot_sim, axis=0)
+        sorted_labels = torch.argsort(dot_sim, dim=1, descending=False)[:, -(max(top_k_spec)+1):]
+
+        gt_labels = []
+        gt_categories_text = []
+        gt_pcds = []
+        for gt_obj in valid_gt_objects:
+            gt_pcd = np.asarray(gt_obj.pcd.points)
+            gt_categories_text.extend([hm3d_to_nyu[gt_obj.category]]*len(gt_pcd))
+            gt_labels.extend([gt_classes.index(hm3d_to_nyu[gt_obj.category])]*len(gt_pcd))
+            gt_pcds.append(gt_pcd)
+        # concatenate all pcds
+        all_gt_pcds = np.concatenate(gt_pcds, axis=0)
+        all_gt_labels = np.array(gt_labels)
+        unique_gt_labels = np.unique(all_gt_labels)
+        
+        pred_sorted_labels = []
+        pred_pcds = []
+        for i,pred_obj in enumerate(pred_objects):
+            # downsample the point cloud
+            downsampled_pred_obj = pred_obj.pcd.voxel_down_sample(voxel_size=0.1)
+            pred_pcd = np.asarray(downsampled_pred_obj.points)
+            # pred_pcd = np.asarray(pred_obj.pcd.points)
+            pred_pcds.append(pred_pcd)
+            pred_sorted_labels.extend([sorted_labels[i]]*len(pred_pcd))
+        all_pred_pcds = np.concatenate(pred_pcds, axis=0)
+        pred_pcd_o3d = o3d.geometry.PointCloud()
+        pred_pcd_o3d.points = o3d.utility.Vector3dVector(all_pred_pcds)
+        # gt_pcd_o3d = o3d.geometry.PointCloud()
+        # gt_pcd_o3d.points = o3d.utility.Vector3dVector(all_gt_pcds)
+        pred_pcd_tree = o3d.geometry.KDTreeFlann(pred_pcd_o3d)
+        # all_gt_pcds_tensor = torch.from_numpy(all_gt_pcds).float().to(device)
+        # all_pred_pcds_tensor = torch.from_numpy(all_pred_pcds).float().to(device)
+        all_pred_sorted_labels_tensor = torch.stack(pred_sorted_labels, dim=0).float().cpu()
+
+        gt_to_pred_matches = []
+        all_dists = []
+        for point in all_gt_pcds:
+            [_, idx, _] = pred_pcd_tree.search_knn_vector_3d(point, 1)  # 1-nearest neighbor
+            gt_to_pred_matches.append(idx[0])
+            all_dists.append(np.linalg.norm(point - all_pred_pcds[idx[0]]))
+        # dists = torch.cdist(all_gt_pcds_tensor, all_pred_pcds_tensor).cpu()
+        closest_pred_sorted_labels = all_pred_sorted_labels_tensor.cpu().numpy()[torch.tensor(gt_to_pred_matches)]
+        # print("avege dist: ", np.mean(all_dists), "max dist: ", np.max(all_dists))
+        results = {"top_k_accuracies": {}, "gt_vertices_num": len(all_gt_labels), 
+                   "category_wise_failure_rates": {}, "category_wise_failure_portions": {}}
+        total_points_per_category = {cat: 0 for cat in set(gt_categories_text)}
+        unique_categories_total, counts_total = np.unique(gt_categories_text, return_counts=True)
+        for category, count in zip(unique_categories_total, counts_total):
+            total_points_per_category[category] = count
+        for top_k in top_k_spec:
+            # Metric 1: Top-K candidate label accuracy
+            tok_labels = closest_pred_sorted_labels[:, -top_k:]
+            matches = np.any(tok_labels == all_gt_labels[:, None], axis=1)
+            # Calculate the Top-K accuracy
+            top_k_accuracy = np.mean(matches)
+            results["top_k_accuracies"][f"top_{top_k}"] = top_k_accuracy
+            print(f'Top-{top_k} candidate label accuracy for vertices: {top_k_accuracy:.4f}')
+                        # Vectorized counting of failures
+            unmatched_indices = np.where(~matches)[0]
+            unmatched_categories = np.array(gt_categories_text)[unmatched_indices]
+            
+            unique_categories, counts = np.unique(unmatched_categories, return_counts=True)
+            category_wise_failures = {cat: 0 for cat in set(gt_categories_text)}
+            for category, count in zip(unique_categories, counts):
+                category_wise_failures[category] += count
+            # Calculate the failure portion for each category
+            failed_vertices_count = len(unmatched_indices)
+            category_wise_failure_portion = {cat: 0 for cat in set(gt_categories_text)}
+            for category in category_wise_failures:
+                if total_points_per_category[category] > 0:
+                    category_wise_failure_portion[category] = round(category_wise_failures[category] / failed_vertices_count, 2)
+            sorted_category_wise_failure_portion = dict(sorted(category_wise_failure_portion.items(), key=lambda item: item[1], reverse=True))
+            results["category_wise_failure_portions"][f"top_{top_k}"] = sorted_category_wise_failure_portion
+            
+            # Calculate the failure rate for each category
+            category_wise_failure_rates = {cat: 0 for cat in sorted(set(gt_categories_text))}
+            for category in category_wise_failures:
+                if total_points_per_category[category] > 0:
+                    category_wise_failure_rates[category] = round(category_wise_failures[category] / total_points_per_category[category], 2)
+                    
+            results["category_wise_failure_rates"][f"top_{top_k}"] = category_wise_failure_rates
+        print("\n------------------------Category Failure Rates--------------------------")
+        for top_k in [1, 5, 10, 20, 50]:    
+            print(f'Category-wise failures for top-{top_k}: {results["category_wise_failure_rates"][f"top_{top_k}"]}')
+        print("\n------------------------Category Failure Portion--------------------------")
+        for top_k in [1, 5, 10, 20, 50]:
+            print(f'Category-wise failure portions for top-{top_k}: {results["category_wise_failure_portions"][f"top_{top_k}"]}')
+        file_name = f"results_eval/{self.params.main.scene_id}_{self.params.main.floor_id}/hovsg_topk_eval_vertices.json"
+        os.makedirs(os.path.dirname(file_name), exist_ok=True)
+        with open(file_name, 'w') as f:
+            json.dump(results, f, indent=4)
+        return results
 
     def object_semantics_eval_tp_auc(
         self, top_k_spec, row_ind, col_ind, pred_objects, gt_objects, gt_text_feats, gt_classes
     ):
         success_k = {k: list() for k in top_k_spec}
+        failed_cat_k = {k: list() for k in top_k_spec}
+        import pandas as pd
+        hm3dsem_full_mappings = pd.read_csv('hovsg/labels/hm3dsem_full_mappings.csv', header=0, sep=",")
+        hm3d_to_nyu = {k: v if not pd.isna(v) else None for k, v in zip(hm3dsem_full_mappings['category'], hm3dsem_full_mappings['nyuClass'])}
+        excluded_categories = ['door', 'window', 'wall', 'floor', 'ceiling', 'column', 'beam', 'stair', 'tabletop', 'light', 'appliance', 'furniture', 'other']
+        valid_gt_objects_num = len(col_ind)
         for pred_idx, gt_idx in zip(row_ind, col_ind):
             # dot_sim = np.dot(pred_objects[pred_idx].embedding, gt_text_feats.T)
+            if gt_objects[gt_idx].category in excluded_categories:
+                valid_gt_objects_num -= 1
+                continue
+            elif hm3d_to_nyu[gt_objects[gt_idx].category] is None:
+                valid_gt_objects_num -= 1
+                continue
+            else:
+                gt_objects[gt_idx].category = hm3d_to_nyu[gt_objects[gt_idx].category]
             dot_sim = (
                 pairwise_cosine_similarity(
                     torch.from_numpy(pred_objects[pred_idx].embedding.reshape(1, -1)).float(),
@@ -483,15 +648,52 @@ class HM3DSemanticEvaluator:
                 .numpy()
             )
             # sort the dot similarity scores in descending order
-            sorted_dot_similarity = np.sort(dot_sim)[::-1]
+            sorted_dot_idx = np.argsort(dot_sim)[::-1]
             for k in top_k_spec:
-                top_k_idx = np.argsort(dot_sim)[::-1][:k]
+                top_k_idx = sorted_dot_idx[:k]
                 # get names of top k classes
                 top_k_classes = [gt_classes[idx] for idx in top_k_idx]
                 if gt_objects[gt_idx].category in top_k_classes:
                     success_k[k].append((pred_idx))
-        top_k_acc = {k: len(v) / len(col_ind) for k, v in success_k.items()}
-
+                else:
+                    failed_cat_k[k].append((gt_objects[gt_idx].category))
+        top_k_acc = {k: len(v) / valid_gt_objects_num for k, v in success_k.items()}
+        for k, v in failed_cat_k.items():
+            print(f"Failed categories for top-{k}: {sorted(list(set(v)))}")
         norm_top_k = [k / len(gt_classes) for k in top_k_spec]
         tp_top_k_auc = np.trapz(list(top_k_acc.values()), norm_top_k)
         return top_k_acc, tp_top_k_auc
+    
+    def object_semantics_eval_topk_query(
+        self, top_k_spec, row_ind, col_ind, pred_objects, gt_objects, gt_text_feats, gt_classes
+    ):
+        excluded_categories = ['door', 'window', 'wall', 'floor', 'ceiling', 'column', 'beam', 'stair', 'tabletop', 'light', 'appliance', 'furniture', 'other']
+        success_k = {k: 0 for k in top_k_spec}
+        gt_object_indices = np.unique(np.array([gt_classes.index(gt_obj.category) for gt_obj in gt_objects if gt_obj.category not in excluded_categories]))
+        gt_object_text_feats = gt_text_feats[gt_object_indices]
+        gt_object_classes = [gt_classes[ind] for ind in gt_object_indices]
+        pred_object_text_feats = np.array([pred_obj.embedding for pred_obj in pred_objects])
+        dot_sim = pairwise_cosine_similarity(
+                    torch.from_numpy(pred_object_text_feats).float(),
+                    torch.from_numpy(gt_object_text_feats).float(),
+                ).numpy()
+        sorted_dot_sim = np.argsort(dot_sim, axis=0)
+        row_to_col = {row_ind[i]: col_ind[i] for i in range(len(row_ind))}
+        gt_ind_to_category = {ind: gt_objects[ind].category for ind in range(len(gt_objects))}
+        failed_cat_k = {k: [] for k in top_k_spec}
+        for k in top_k_spec:
+            top_k_idx_all_cat = sorted_dot_sim[-k:, :] 
+            # print(top_k_idx_all_cat.shape)
+            for i in range(len(gt_object_indices)):
+                associated_gt_inds = [row_to_col[ind] for ind in top_k_idx_all_cat[:, i] if ind in row_to_col]
+                associated_gt_classes = {gt_ind_to_category[ind] for ind in associated_gt_inds}
+
+                if gt_object_classes[i] in associated_gt_classes:
+                    success_k[k] += 1
+                else:
+                    failed_cat_k[k].append(gt_object_classes[i])
+
+        top_k_acc = {k: v / len(gt_object_indices) for k, v in success_k.items()}
+        for k, v in failed_cat_k.items():
+            print(f"Failed categories for top-{k}: {sorted(v)}")
+        return top_k_acc

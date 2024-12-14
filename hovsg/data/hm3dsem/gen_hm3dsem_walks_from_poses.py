@@ -27,7 +27,7 @@ def main():
     parser.add_argument(
         "--pose_dir",
         type=str,
-        default="data/hm3dsem_poses",
+        default="data/hm3dsem/metadata/poses",
         help="the file containing the poses to be used for generating the data",
     )
     parser.add_argument("--split", type=str, default="val")

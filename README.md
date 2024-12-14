@@ -106,7 +106,7 @@ We used the following scenes from the Habitat Matterport 3D Semantics dataset in
 2. Secondly, we construct a new hierarchical graph-structured dataset that is called `hm3dsem_walks` that includes ground truth based on all observations recorded. To produce this ground-truth data please execute the following: First, define the following config paths: `main.package_path`, `main.dataset_path`, `main.raw_data_path`, and `main.save_path` under `config/create_graph.yaml`. For each scene, define the `main.scene_id`, `main.split`. Next, execute the following to obtain floor-, region-, and object-level ground truth data per scene. We utilize every recorded frame without skipping (see parameter `dataset.hm3dsem.gt_skip_frames`) and recommend 128 GB of RAM to compile this as the scenes differ in size:
 ```bash
 cd HOV-SG
-python hovsg/data/hm3dsem/create_hm3dsem_walks_gt.py
+python hovsg/data/hm3dsem/create_hm3dsem_walks_gt.py  main.scene_id=
 ```
 
 To evaluate semantic segmentation cababilities, we used [ScanNet](http://www.scan-net.org/) and [Replica](https://github.com/facebookresearch/Replica-Dataset).
@@ -212,7 +212,7 @@ The Data folder should have the following structure:
 
 ### Create scene graphs (only for Habitat Matterport 3D Semantics):
 ```bash
-python application/create_graph.py main.dataset=hm3dsem main.dataset_path=data/hm3dsem_walks/val/00824-Dd4bFSTQ8gi/ main.save_path=data/scene_graphs/00824-Dd4bFSTQ8gi
+python application/create_graph.py main.dataset=hm3dsem main.dataset_path=hovsg/data/hm3dsem_walks/ main.save_path=hovsg/data/scene_graphs/ main.scene_id=
 ```
 <details>
   <summary>This will generate a scene graph for the specified RGB-D sequence and save it. The following files are generated:</summary>

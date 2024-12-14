@@ -9,7 +9,7 @@ import open3d as o3d
 import open_clip
 import plyfile
 from scipy.spatial import cKDTree
-from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
+# from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
 from sklearn.metrics import confusion_matrix
 from sklearn.neighbors import BallTree
 import torch

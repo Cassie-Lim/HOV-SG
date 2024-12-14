@@ -56,4 +56,9 @@ def get_label_feats(clip_model, clip_feat_dim, obj_labels, label_feat_path=None)
         classes_matrix = pd.read_csv(os.path.join(label_feat_path, "HM3D_CountsOfObjectTypes.csv"), header=0, sep=";")
         classes = list(classes_matrix[classes_matrix.keys()[0]].values)
         text_feats, classes = compute_label_feats(clip_model, clip_feat_dim, label_feat_path, classes, "text_feats_HM3DSEM_LABELS.npy")
+    elif obj_labels == "NYU_V2_LABELS":
+        label_feat_path = "hovsg/labels"
+        classes_matrix = pd.read_csv(os.path.join(label_feat_path, "NYUv2_objects.csv"), header=0, sep=",")
+        classes = list(classes_matrix['nyuClass'].values)
+        text_feats, classes = compute_label_feats(clip_model, clip_feat_dim, label_feat_path, classes, "text_feats_NYUV2_LABELS.npy")
     return text_feats, classes

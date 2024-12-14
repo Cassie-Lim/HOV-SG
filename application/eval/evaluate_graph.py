@@ -63,7 +63,8 @@ def main(params: DictConfig):
     evaluator = HM3DSemanticEvaluator(params)
     evaluator.load_gt_graph_from_json(os.path.join(dataset_path, "scene_info.json"))
 
-    save_dir = os.path.join(params.main.save_path, params.main.dataset, params.main.split, params.main.scene_id)
+    save_dir = os.path.join(params.main.save_path, params.main.dataset, params.main.scene_id)
+    # save_dir = os.path.join(params.main.save_path, params.main.dataset, params.main.split, params.main.scene_id)
 
     hovsg = Graph(params)
 
@@ -80,8 +81,8 @@ def main(params: DictConfig):
         if type(node) == Object:
             name = hovsg.identify_object(node.embedding, text_feats, classes)
             node.name = name
-    evaluator.evaluate_floors(hovsg.graph)
-    evaluator.evaluate_rooms(hovsg.graph)
+    # evaluator.evaluate_floors(hovsg.graph)
+    # evaluator.evaluate_rooms(hovsg.graph)
     evaluator.evaluate_objects(
         eval_metric=params.eval.association_metric,
         pred_graph=hovsg.graph,
